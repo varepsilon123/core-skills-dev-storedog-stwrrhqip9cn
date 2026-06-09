@@ -122,3 +122,89 @@ def test_post_discount_success(client, mock_discount_factory):
 
         # Verify query was called twice (once to count, once to return all)
         assert mock_discount_class.query.all.call_count == 2
+
+
+@pytest.mark.unit
+def test_get_discount_code_success(client, mock_discount_factory):
+    """Test GET /discount-code returns discount when code is found"""
+    with patch("discounts.Discount") as mock_discount_class:
+        # Mock a discount object with minimal data
+        mock_discount = mock_discount_factory(id=1, name="Summer Sale", code="SUMMER20", value=20)
+
+        # Mock the query chain: Discount.query.filter_by(code="SUMMER20").first()
+        mock_discount_class.query.filter_by.return_value.first.return_value = mock_discount
+
+        # Make request
+        response = client.get("/discount-code?discount_code=SUMMER20")
+
+        # Assertions
+        assert response.status_code == 200
+        json_data = response.get_json()
+        assert json_data["code"] == "SUMMER20"
+        assert json_data["status"] == 1
+        assert json_data["name"] == "Summer Sale"
+
+        mock_discount_class.query.filter_by.assert_called_once_with(code="SUMMER20")
+
+
+@pytest.mark.unit
+def test_get_discount_code_not_found(client):
+    """Test GET /discount-code returns 404 when code doesn't exist"""
+    with patch("discounts.Discount") as mock_discount_class:
+        # Mock query returning None
+        mock_discount_class.query.filter_by.return_value.first.return_value = None
+
+        response = client.get("/discount-code?discount_code=INVALID")
+
+        assert response.status_code == 404
+        json_data = response.get_json()
+        assert json_data["error"] == "Discount not found"
+        assert json_data["status"] == 0
+
+
+@pytest.mark.unit
+def test_get_discount_code_with_broken_flag_enabled(client):
+    """Test GET /discount-code randomly fails when BROKEN_DISCOUNTS=ENABLED"""
+    # Directly patch the module-level variable instead of reloading the module
+    with patch("discounts.BROKEN_DISCOUNTS", "ENABLED"), \
+         patch("discounts.Discount") as mock_discount_class, \
+         patch("discounts.random.choice") as mock_random:
+
+        # Force the random error to trigger
+        mock_random.return_value = True
+
+        mock_discount = MagicMock()
+        mock_discount_class.query.filter_by.return_value.first.return_value = mock_discount
+
+        response = client.get("/discount-code?discount_code=TEST")
+
+        assert response.status_code == 500
+        json_data = response.get_json()
+        assert "error" in json_data
+        assert json_data["error"] == "Discount service error"
+        assert "stack_trace" in json_data
+
+
+@pytest.mark.unit
+def test_get_discount_code_database_exception(client):
+    """Test GET /discount-code handles database exceptions"""
+    with patch("discounts.Discount") as mock_discount_class:
+        # Mock database query to raise an exception
+        mock_discount_class.query.filter_by.side_effect = Exception("Database connection error")
+
+        response = client.get("/discount-code?discount_code=TEST")
+
+        assert response.status_code == 500
+        json_data = response.get_json()
+        assert "error" in json_data
+        assert json_data["message"] == "Internal Server Error"
+        assert "stack_trace" in json_data
+
+
+@pytest.mark.unit
+def test_hello_endpoint(client):
+    """Test GET / returns hello message"""
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert response.content_type == "application/json"
