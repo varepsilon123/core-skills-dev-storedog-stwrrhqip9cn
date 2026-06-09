@@ -16,9 +16,8 @@ function Discount() {
   function fetchDiscountCode() {
     setLoading(true) // Ensure the loading state is set before fetching
 
-    // FIXED from Challenge 3: Removed ?limit=5 parameter since backend no longer supports it
-    // The backend now returns all discounts without limit functionality
-    fetch(`${discountPath}/discount`)
+    // Optimization: limit the number of discounts fetched to reduce payload size
+    fetch(`${discountPath}/discount?limit=5`)
       .then((res) => {
         if (!res.ok) {
           // Handle HTTP errors explicitly
@@ -48,17 +47,16 @@ function Discount() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // FIXED from Challenge 3: Restored proper error handling
-  // Previously this fallback case was removed, causing blank discount codes when API failed
-  // Now properly shows "STOREDOG" as fallback when data is null
+  // BUG: Missing error handling! A developer removed the fallback case for !data,
+  // thinking "the API always returns data, this is dead code."
+  // When the backend /discount endpoint fails, data remains null and renders as blank.
+  // FIX: Add back the error handling:
+  // ) : !data ? (
+  //   <span>GET FREE SHIPPING WITH DISCOUNT CODE <strong>STOREDOG</strong></span>
   return (
     <div className="flex flex-row justify-center py-4 bg-primary-2 text-white discount-wrapper">
       {isLoading ? (
         <span>GET FREE SHIPPING WITH DISCOUNT CODE</span>
-      ) : !data ? (
-        <span>
-          GET FREE SHIPPING WITH DISCOUNT CODE <strong>STOREDOG</strong>
-        </span>
       ) : (
         <span>
           GET FREE SHIPPING WITH DISCOUNT CODE &nbsp;{' '}

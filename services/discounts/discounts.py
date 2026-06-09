@@ -28,6 +28,9 @@ logger = logging.getLogger('werkzeug')
 logger.addHandler(json_handler)
 logger.setLevel(logging.DEBUG)
 
+# get the BROKEN_DISCOUNTS environment variable, if it exists
+BROKEN_DISCOUNTS = os.getenv("BROKEN_DISCOUNTS")
+
 app = create_app()
 CORS(app)
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
@@ -64,29 +67,33 @@ def status():
     if flask_request.method == 'GET':
 
         try:
-            with tracer.trace("discounts.query"):
-                logger.info("Querying the database for discounts")
-                discounts = Discount.query.all()
-                logger.info(f"Discounts available: {len(discounts)}")
+            discounts = Discount.query.all()
+            logger.info(f"Discounts available: {len(discounts)}")
 
-            with tracer.trace("discounts.influencer.count"):
-                influencer_count = 0
-                for discount in discounts:
+            # Limit the number of discounts returned for performance
+            limit = flask_request.args.get("limit", 10)
+            discounts = discounts[:limit]
 
-                    for _ in range(30):
-                        all_discount_names = ",".join([d.name.upper() for d in discounts])
-                    if discount.name.upper() in all_discount_names and discount.discount_type.influencer:
-                        influencer_count += 1
-                    # if discount.discount_type.influencer:
-                    #     influencer_count += 1
-            with tracer.trace("discounts.influencer.log"):
-                logger.info(
-                    f"Total of {influencer_count} influencer specific discounts as of this request")
+            influencer_count = 0
+            for discount in discounts:
+                if discount.discount_type.influencer:
+                    influencer_count += 1
+            logger.info(
+                f"Total of {influencer_count} influencer specific discounts as of this request")
 
             return jsonify([b.serialize() for b in discounts])
 
-        except:
-            logger.error("An error occurred while getting discounts.")
+        except Exception as e:
+            logger.error("An error occurred while getting discounts.", exc_info=True)
+            # Explicitly set error info on the current span for APM visibility
+            span = tracer.current_span()
+            if span:
+                span.set_exc_info(*sys.exc_info())
+            # Also set error info on the root span so the stack trace
+            # appears on the top-level flask.request span in APM
+            root_span = tracer.current_root_span()
+            if root_span:
+                root_span.set_exc_info(*sys.exc_info())
             err = jsonify({'error': 'Internal Server Error'})
             err.status_code = 500
             return err
@@ -110,13 +117,68 @@ def status():
 
             return jsonify([b.serialize() for b in discounts])
 
-        except:
-            logger.error("An error occurred while creating a new discount.")
+        except Exception as e:
+            logger.error("An error occurred while creating a new discount.", exc_info=True)
+            # Explicitly set error info on the current span for APM visibility
+            span = tracer.current_span()
+            if span:
+                span.set_exc_info(*sys.exc_info())
+            # Also set error info on the root span so the stack trace
+            # appears on the top-level flask.request span in APM
+            root_span = tracer.current_root_span()
+            if root_span:
+                root_span.set_exc_info(*sys.exc_info())
             err = jsonify({'error': 'Internal Server Error'})
             err.status_code = 500
             return err
 
     else:
         err = jsonify({'error': 'Invalid request method'})
+        err.status_code = 405
+        return err
+
+
+@app.route("/discount-code", methods=["GET"])
+def getDiscount():
+    if flask_request.method == "GET":
+        try:
+            # Get the discount code from the query string
+            discount_code = flask_request.args.get("discount_code")
+            # Log the discount code
+            logger.info(f"Discount code: {discount_code}")
+            discount = Discount.query.filter_by(code=discount_code).first()
+
+            # Broken discounts feature flag is ENABLED, randomly error out
+            if BROKEN_DISCOUNTS == "ENABLED" and random.choice([True, False]):
+                raise Exception("Discount service error")
+
+            if discount:
+                response = discount.serialize()
+                response.update({"status": 1})
+                return jsonify(response)
+            else:
+                err = jsonify({"error": "Discount not found", "status": 0})
+                err.status_code = 404
+                return err
+        except Exception as e:
+            # Log the error details with exception type, message, and stack trace
+            logger.error(
+                "An error occurred while getting discount.",
+                exc_info=True  # Includes the stack trace in the log
+            )
+            # Optionally capture the stack trace separately if needed
+            stack_trace = traceback.format_exc()
+            logger.debug(f"Stack trace: {stack_trace}")
+
+            # Add error details to the response for debugging
+            err = jsonify({
+                'error': str(e),
+                'message': 'Internal Server Error',
+                'stack_trace': stack_trace  # Optional: Include only for debugging purposes
+            })
+            err.status_code = 500
+            return err
+    else:
+        err = jsonify({"error": "Invalid request method"})
         err.status_code = 405
         return err
