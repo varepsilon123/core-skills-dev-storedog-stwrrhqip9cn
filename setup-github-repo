@@ -1,0 +1,280 @@
+#!/bin/bash
+set -e
+
+# Workshop identifier
+WORKSHOP_ENV="core-skills-dev-workshop"
+
+# Script to set up GitHub repository for Storedog
+# This configures git, sets secrets, removes Docker build workflows, and pushes the initial code
+
+# Source color definitions
+source "$(dirname "$0")/lib/log-colors.sh"
+
+echo -e "${BLUE}========================================${NC}"
+echo -e "${BLUE}  GitHub Repository Setup${NC}"
+echo -e "${BLUE}========================================${NC}"
+echo ""
+
+# Function to get GitHub username from gh CLI
+get_github_credentials() {
+    if ! command -v gh &> /dev/null; then
+        echo -e "${RED}Error: GitHub CLI (gh) is not installed or not in PATH.${NC}"
+        exit 1
+    fi
+
+    if ! gh auth status &> /dev/null; then
+        echo -e "${RED}Error: Not authenticated with GitHub CLI.${NC}"
+        echo -e "${RED}Please run 'gh auth login' first.${NC}"
+        exit 1
+    fi
+
+    GITHUB_USERNAME=$(gh api user --jq ".login")
+    GITHUB_EMAIL=$(gh api user --jq ".email // empty")
+
+    if [ -z "$GITHUB_USERNAME" ]; then
+        echo -e "${RED}Error: Could not retrieve GitHub username.${NC}"
+        exit 1
+    fi
+
+    if [ -z "$GITHUB_EMAIL" ]; then
+        # Email is private — fetch the actual noreply address GitHub has on file
+        # Note: if email is private and the gh auth scope doesn't include user:email, this may return empty
+        GITHUB_EMAIL_TMP=$(gh api user/emails --jq '.[] | select(.primary == true) | .email' 2>/dev/null) || true
+        # Only accept the result if it looks like an email (not a JSON error response)
+        if [[ "$GITHUB_EMAIL_TMP" == *"@"* ]]; then
+            GITHUB_EMAIL="$GITHUB_EMAIL_TMP"
+        fi
+    fi
+
+    if [ -z "$GITHUB_EMAIL" ]; then
+        GITHUB_EMAIL="learner@lab.local"
+        echo -e "${YELLOW}Warning: Could not retrieve GitHub email. Using placeholder for git config.${NC}"
+    fi
+}
+
+# Get GitHub credentials
+echo -e "${GREEN}Step 1: Retrieving your GitHub credentials${NC}"
+get_github_credentials
+echo -e "${GREEN}✓ Found GitHub username: ${GITHUB_USERNAME}${NC}"
+echo -e "${GREEN}✓ Found GitHub email: ${GITHUB_EMAIL}${NC}"
+
+echo ""
+
+# Configure git
+echo -e "${GREEN}Step 2: Configuring git${NC}"
+git config --global user.name "$GITHUB_USERNAME"
+git config --global user.email "$GITHUB_EMAIL"
+echo -e "${GREEN}✓ Git configured with your GitHub credentials${NC}"
+echo ""
+
+# Get the repository name from environment variable
+if [ -z "${_SANDBOX_ID}" ]; then
+    echo -e "${RED}Error: _SANDBOX_ID environment variable not set.${NC}"
+    echo -e "${RED}This script must be run in the lab environment.${NC}"
+    exit 1
+fi
+
+REPO_NAME="core-skills-dev-storedog-${_SANDBOX_ID}"
+USER_REPO_URL="https://github.com/${GITHUB_USERNAME}/${REPO_NAME}"
+
+# Verify DD_API_KEY and DD_APP_KEY are set
+if [ -z "$DD_API_KEY" ]; then
+    echo -e "${RED}Error: DD_API_KEY environment variable not set.${NC}"
+    echo -e "${RED}Please ensure your Datadog credentials are configured.${NC}"
+    exit 1
+fi
+
+if [ -z "$DD_APP_KEY" ]; then
+    echo -e "${RED}Error: DD_APP_KEY environment variable not set.${NC}"
+    echo -e "${RED}Please ensure your Datadog credentials are configured.${NC}"
+    exit 1
+fi
+
+# Check if repository exists and is accessible
+echo -e "${GREEN}Step 3: Verifying GitHub repository exists and is accessible${NC}"
+if REPO_VIEW_OUTPUT=$(gh repo view "${GITHUB_USERNAME}/${REPO_NAME}" 2>&1); then
+    echo -e "${GREEN}✓ Repository exists: ${GITHUB_USERNAME}/${REPO_NAME}${NC}"
+    echo ""
+else
+    echo -e "${RED}✗ Cannot access repository: ${GITHUB_USERNAME}/${REPO_NAME}${NC}"
+    echo ""
+
+    echo -e "${YELLOW}Error: ${REPO_VIEW_OUTPUT}${NC}"
+    echo ""
+    echo -e "${YELLOW}Please verify:${NC}"
+    echo -e "${YELLOW}1. The repository exists at: https://github.com/${GITHUB_USERNAME}/${REPO_NAME}${NC}"
+    echo -e "${YELLOW}2. You are authenticated with the GitHub CLI (run 'gh auth status' to check)${NC}"
+    echo -e "${YELLOW}3. Complete all steps in the section \e[3mCreate GitHub Repository\e[23m${NC}"
+    echo ""
+    exit 1
+fi
+
+# Set Datadog secrets in repository
+echo -e "${GREEN}Step 4: Setting Datadog secrets in repository${NC}"
+if ERROR_OUTPUT=$(gh secret set DD_API_KEY --repo "${GITHUB_USERNAME}/${REPO_NAME}" --body "$DD_API_KEY" 2>&1); then
+    echo -e "${GREEN}✓ DD_API_KEY secret configured${NC}"
+else
+    echo -e "${RED}✗ Failed to set DD_API_KEY secret${NC}"
+    echo ""
+
+    echo -e "${RED}Error: ${ERROR_OUTPUT}${NC}"
+    echo ""
+    exit 1
+fi
+
+if ERROR_OUTPUT=$(gh secret set DD_APP_KEY --repo "${GITHUB_USERNAME}/${REPO_NAME}" --body "$DD_APP_KEY" 2>&1); then
+    echo -e "${GREEN}✓ DD_APP_KEY secret configured${NC}"
+else
+    echo -e "${RED}✗ Failed to set DD_APP_KEY secret${NC}"
+    echo ""
+
+    echo -e "${RED}Error: ${ERROR_OUTPUT}${NC}"
+    echo ""
+    exit 1
+fi
+echo ""
+
+# Initialize and push repository
+echo -e "${GREEN}Step 5: Initializing git repository and pushing code${NC}"
+cd /root/lab/storedog
+
+# Remove any existing git directory
+if [ -d .git ]; then
+    rm -rf .git
+fi
+
+# Initialize new git repository
+echo -e "${YELLOW}→ Initializing git repository...${NC}"
+git init > /dev/null
+git branch -M main > /dev/null
+
+# ============================================================
+# REMOVE DOCKER BUILD WORKFLOWS
+# ============================================================
+# The source Storedog repository (github.com/DataDog/storedog) contains GitHub Actions
+# workflows that build and push Docker images to ghcr.io/datadog/storedog/*.
+#
+# PROBLEM: When learners push this code to their personal repositories, these workflows
+# trigger automatically but fail with: "permission_denied: The requested installation
+# does not exist". This happens because:
+#   1. Learners don't have write access to the Datadog organization's GHCR namespace
+#   2. Even with packages:write permission, they can't push to ghcr.io/datadog/*
+#
+# SOLUTION: Remove Docker build/push workflows before committing. Learners don't need
+# these workflows because:
+#   - Pre-built images are pulled during lab provisioning (see host-images/lab-host/provision.sh)
+#   - Lab exercises use these pre-built images via docker-compose.yml
+#   - Learners work with source code for learning purposes, not image building
+#
+# PRESERVED WORKFLOWS: This only removes Docker build/push workflows. Test workflows
+# (like test-discounts.yml created by enable-test-op-and-code-coverage script) are preserved and work
+# correctly in learner repositories.
+# ============================================================
+echo -e "${YELLOW}→ Removing Docker build workflows...${NC}"
+if [ -d .github/workflows ]; then
+    # Remove workflows that build/push Docker images to GHCR
+    find .github/workflows -type f \( -name "*.yml" -o -name "*.yaml" \) -exec grep -l "ghcr.io\|docker.*push\|docker.*build.*push" {} \; 2>/dev/null | xargs rm -f 2>/dev/null || true
+    echo -e "${GREEN}✓ Docker build workflows removed${NC}"
+else
+    echo -e "${GREEN}✓ No workflows directory found${NC}"
+fi
+
+# Stage all files
+echo -e "${YELLOW}→ Staging all files...${NC}"
+git add . > /dev/null
+
+# Create initial commit
+echo -e "${YELLOW}→ Creating initial commit...${NC}"
+git commit -m 'Add Storedog code initial commit' > /dev/null
+
+# Add remote and push
+echo -e "${YELLOW}→ Adding remote and pushing to GitHub...${NC}"
+git remote add origin "${USER_REPO_URL}.git" > /dev/null
+git push -u origin main > /dev/null
+
+echo -e "${GREEN}✓ Code pushed to GitHub${NC}"
+echo ""
+
+# Configure Source Code Integration
+echo -e "${BLUE}========================================${NC}"
+echo -e "${BLUE}  Configuring Source Code Integration${NC}"
+echo -e "${BLUE}========================================${NC}"
+echo ""
+
+echo -e "${GREEN}Step 6: Setting up Source Code Integration${NC}"
+
+# Ensure we're in the correct directory
+cd /root/lab/storedog
+
+# Download datadog-ci if not present
+if [ ! -f ./datadog-ci_linux-x64 ]; then
+    echo -e "${YELLOW}→ Downloading datadog-ci...${NC}"
+    curl -L --fail "https://github.com/DataDog/datadog-ci/releases/latest/download/datadog-ci_linux-x64" \
+      -o ./datadog-ci_linux-x64 2>/dev/null
+    chmod +x ./datadog-ci_linux-x64
+fi
+
+# Upload git metadata to Datadog
+echo -e "${YELLOW}→ Uploading git metadata to Datadog...${NC}"
+
+if DATADOG_API_KEY=$DD_API_KEY ./datadog-ci_linux-x64 git-metadata upload --repository-url ${USER_REPO_URL} > /dev/null; then
+    echo -e "${GREEN}✓ Git metadata uploaded successfully${NC}"
+else
+    echo -e "${RED}✗ Failed to upload git metadata${NC}"
+    echo -e "${RED}Please check your Datadog API key and try again.${NC}"
+    exit 1
+fi
+echo ""
+
+# Get current commit SHA
+COMMIT_SHA=$(git rev-parse HEAD)
+echo -e "${YELLOW}→ Current commit SHA: ${COMMIT_SHA}${NC}"
+echo ""
+
+# Create .env file for Docker Compose in /root/lab directory
+echo -e "${YELLOW}→ Creating .env file with Source Code Integration tags...${NC}"
+cat > /root/lab/.env << EOF
+DD_TAGS=env:${WORKSHOP_ENV},git.commit.sha:${COMMIT_SHA},git.repository_url:github.com/${GITHUB_USERNAME}/${REPO_NAME}
+DD_GIT_REPOSITORY_URL=https://github.com/${GITHUB_USERNAME}/${REPO_NAME}
+DD_GIT_COMMIT_SHA=${COMMIT_SHA}
+EOF
+echo -e "${GREEN}✓ .env file created${NC}"
+echo ""
+
+# Export environment variables for current session
+echo -e "${YELLOW}→ Exporting environment variables...${NC}"
+export DD_TAGS="env:${WORKSHOP_ENV},git.commit.sha:${COMMIT_SHA},git.repository_url:github.com/${GITHUB_USERNAME}/${REPO_NAME}"
+export DD_GIT_REPOSITORY_URL="https://github.com/${GITHUB_USERNAME}/${REPO_NAME}"
+export DD_GIT_COMMIT_SHA="${COMMIT_SHA}"
+echo -e "${GREEN}✓ Variables exported${NC}"
+echo ""
+
+# Restart services with Source Code Integration configuration
+echo -e "${YELLOW}→ Restarting Storedog services with SCI configuration...${NC}"
+echo -e "${BLUE}This may take 1-2 minutes...${NC}"
+
+# Change to lab directory where docker-compose.yml is located
+cd /root/lab
+
+# Stop services
+docker compose down
+
+# Wait for services to fully stop and release ports
+echo -e "${YELLOW}→ Waiting for services to stop...${NC}"
+sleep 5
+
+# Re-source the .env file to ensure Docker Compose picks up all git metadata
+# Shell env vars take precedence over .env file, so we must export them
+set -a
+. /root/lab/.env
+set +a
+
+# Restart services with new environment variables
+docker compose up -d
+
+echo -e "${GREEN}✓ Services restarted${NC}"
+echo ""
+
+echo -e "${BLUE}========================================${NC}"
+echo -e "${GREEN}✓ Setup Complete!${NC}"
+echo -e "${BLUE}========================================${NC}"
