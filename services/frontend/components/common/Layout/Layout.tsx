@@ -13,6 +13,14 @@ import CheckoutSidebarView from '@components/checkout/CheckoutSidebarView'
 import OrderConfirmView from '@components/checkout/OrderConfirmView'
 import { CheckoutProvider } from '@components/checkout/context'
 import { MenuSidebarView } from '@components/common/UserNav'
+/* ============================================================
+   [DISCOUNT BANNER] - Import Discount component for the purple discount code banner.
+   This displays a promotional banner showing discount codes fetched from the discounts service.
+   ============================================================ */
+import Discount from '@components/common/Discount'
+/* ============================================================
+   [END DISCOUNT BANNER]
+   ============================================================ */
 import Ad from '@components/common/Ad'
 import type { Page } from '@customTypes/page'
 import type { Link as LinkProps } from '../UserNav/MenuSidebarView'
@@ -113,6 +121,14 @@ const Layout: React.FC<Props> = ({ children, pageProps: { ...pageProps } }) => {
   return (
     <div className={cn(s.root)}>
       <Navbar />
+      {/* ============================================================
+          [DISCOUNT BANNER] - Renders the purple discount code banner below the navbar.
+          This fetches and displays promotional discount codes from the discounts service.
+          ============================================================ */}
+      <Discount />
+      {/* ============================================================
+          [END DISCOUNT BANNER]
+          ============================================================ */}
       <main className="fit">{children}</main>
       <Ad />
       <Footer pages={pages} />
