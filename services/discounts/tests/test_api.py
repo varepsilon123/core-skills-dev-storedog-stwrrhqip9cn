@@ -60,6 +60,52 @@ def test_get_discounts_success(client):
 
 
 @pytest.mark.unit
+def test_get_discounts_with_limit_param(client):
+    """Test GET /discount applies integer limit query parameter"""
+    with patch("discounts.Discount") as mock_discount_class:
+        mock_discounts = []
+        for i in range(12):
+            mock_discount = MagicMock()
+            mock_discount.serialize.return_value = {
+                "id": i + 1,
+                "name": f"Discount {i + 1}",
+                "code": f"CODE{i + 1}",
+                "value": i + 1,
+            }
+            mock_discounts.append(mock_discount)
+
+        mock_discount_class.query.all.return_value = mock_discounts
+
+        response = client.get("/discount?limit=5")
+
+        assert response.status_code == 200
+        assert len(response.get_json()) == 5
+
+
+@pytest.mark.unit
+def test_get_discounts_with_invalid_limit_uses_default(client):
+    """Test GET /discount falls back to default limit when query param is invalid"""
+    with patch("discounts.Discount") as mock_discount_class:
+        mock_discounts = []
+        for i in range(12):
+            mock_discount = MagicMock()
+            mock_discount.serialize.return_value = {
+                "id": i + 1,
+                "name": f"Discount {i + 1}",
+                "code": f"CODE{i + 1}",
+                "value": i + 1,
+            }
+            mock_discounts.append(mock_discount)
+
+        mock_discount_class.query.all.return_value = mock_discounts
+
+        response = client.get("/discount?limit=invalid")
+
+        assert response.status_code == 200
+        assert len(response.get_json()) == 10
+
+
+@pytest.mark.unit
 def test_post_discount_success(client):
     """
     Test POST /discount creates a new discount and returns updated list.

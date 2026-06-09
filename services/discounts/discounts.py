@@ -71,7 +71,7 @@ def status():
             logger.info(f"Discounts available: {len(discounts)}")
 
             # Limit the number of discounts returned for performance
-            limit = flask_request.args.get("limit", 10)
+            limit = flask_request.args.get("limit", 10, type=int)
             discounts = discounts[:limit]
 
             influencer_count = 0
